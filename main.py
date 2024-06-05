@@ -506,7 +506,7 @@ def update_chat(n_clicks, message, chat_history):
 
 
 @app.callback(
-    Output('chat-messages', 'children', allow_duplicate=True),
+    Output('chat-messages-typing', 'children'),
     [Input('chat-messages', 'children')],
     prevent_initial_call=True
 )
