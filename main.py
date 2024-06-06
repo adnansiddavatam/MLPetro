@@ -154,7 +154,7 @@ def get_ai_response(question, train_data, test_data, features):
 
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": detailed_context}
             ]
@@ -410,20 +410,20 @@ def update_cross_plot_and_insights(x_feature, y_feature, remove_outliers):
     [Input('depth-slider', 'value'), Input('gradient-y-axis-dropdown', 'value'),
      Input('remove-outliers-checkbox', 'value')]
 )
-def update_gradient_plot(depth_value, y_feature, remove_outliers):
+def update_gradient_plot(depth_value, x_feature, remove_outliers):
     filtered_test_data = test_data[test_data['DEPTH'] <= depth_value]
 
     if remove_outliers:
         filtered_test_data = remove_outliers_and_negatives(filtered_test_data, features)
 
     fig = px.density_heatmap(
-        filtered_test_data, x="DEPTH", y=y_feature, z="GRZ", histfunc="avg",
+        filtered_test_data, x=x_feature, y="DEPTH", z="GRZ", histfunc="avg",
         color_continuous_scale="Jet",
         title="Gradient Visualization",
         nbinsx=50,  # Increase number of bins for higher resolution
         nbinsy=50   # Increase number of bins for higher resolution
     )
-    fig.update_layout(xaxis_title='Depth (m)', yaxis_title=y_feature)
+    fig.update_layout(xaxis_title=x_feature, yaxis_title='Depth (m)')
     return fig
 
 
