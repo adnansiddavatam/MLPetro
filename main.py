@@ -218,6 +218,7 @@ log("Setting up the Dash app...")
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 
 app.layout = dbc.Container([
+    dcc.Store(id='uploaded-file-store', storage_type='memory'),
     dbc.Row([
         dbc.Col(html.H1("Lithology Prediction Model Results"), className="mb-4")
     ]),
@@ -439,11 +440,11 @@ def update_gradient_plot(depth_value, x_feature, remove_outliers):
 
 
 @app.callback(
-    [Output('chat-messages', 'children'), Output('chat-input', 'value')],
+    [Output('chat-messages', 'children'), Output('chat-input', 'value'), Output('uploaded-file-store', 'data')],
     [Input('send-button', 'n_clicks'), Input('upload-data', 'contents')],
-    [State('chat-input', 'value'), State('chat-messages', 'children'), State('upload-data', 'filename')]
+    [State('chat-input', 'value'), State('chat-messages', 'children'), State('upload-data', 'filename'), State('uploaded-file-store', 'data')]
 )
-def update_chat(n_clicks, file_contents, message, chat_history, filename):
+def update_chat(n_clicks, file_contents, message, chat_history, filename, stored_file):
     if chat_history is None:
         chat_history = []
 
@@ -464,7 +465,7 @@ def update_chat(n_clicks, file_contents, message, chat_history, filename):
                                     style={'background-color': '#FFFFFF', 'padding': '10px', 'border-radius': '10px',
                                            'margin-bottom': '10px'})
 
-    if file_contents:
+    if file_contents and not stored_file:
         content_type, content_string = file_contents.split(',')
         decoded = base64.b64decode(content_string)
         try:
@@ -483,8 +484,9 @@ def update_chat(n_clicks, file_contents, message, chat_history, filename):
                                 style={'background-color': '#DCF8C6', 'padding': '10px', 'border-radius': '10px',
                                        'margin-bottom': '10px'})
         chat_history.append(file_message)
+        stored_file = {'filename': filename, 'contents': file_contents}
 
-    return chat_history, ""
+    return chat_history, "", stored_file
 
 
 @app.callback(
