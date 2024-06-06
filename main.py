@@ -175,8 +175,8 @@ def interpolate_data(x, y, method='linear'):
 
 
 # Load data paths
-train_data_path = r'C:\Users\Adnan Ahmed\PycharmProjects\MLPetro\100082406303W600_136968569_TVD.csv'
-test_data_path = r'C:\Users\Adnan Ahmed\PycharmProjects\MLPetro\generate_data.csv'
+train_data_path = r'100082406303W600_136968569_TVD.csv'
+test_data_path = r'generate_data.csv'
 
 # Feature and target columns
 features = ['DEPTH', 'C13Z', 'C24Z', 'CALZ', 'CN', 'CNCD', 'GRZ', 'LSN', 'PE', 'PORD', 'SSN', 'TENZ', 'ZCOR', 'ZDEN']
@@ -226,7 +226,6 @@ app.layout = dbc.Container([
                 dbc.Tab(label='Predicted Probabilities', tab_id='tab-3'),
                 dbc.Tab(label='Interpolation/Smoothing', tab_id='tab-4'),
                 dbc.Tab(label='Cross-Plot', tab_id='tab-5'),
-                dbc.Tab(label='Lithology Prediction', tab_id='tab-6'),
                 dbc.Tab(label='Gradient', tab_id='tab-7')
             ], id='tabs', active_tab='tab-2'),
             dcc.Slider(
@@ -339,23 +338,12 @@ def render_tab_content(active_tab, depth_value, remove_outliers):
             dcc.Graph(id='cross-plot')
         ])
 
-    elif active_tab == 'tab-6':
-        return html.Div([
-            dcc.Dropdown(
-                id='lithology-y-axis-dropdown',
-                options=[{'label': feature, 'value': feature} for feature in features],
-                value='GRZ',  # Default to Gamma Ray, but users can change it
-                placeholder="Select Y-axis feature for lithology prediction"
-            ),
-            html.Div(id='lithology-content')
-        ])
-
     elif active_tab == 'tab-7':
         return html.Div([
             dcc.Dropdown(
                 id='gradient-y-axis-dropdown',
                 options=[{'label': feature, 'value': feature} for feature in features],
-                value='CN',  # Default to CN
+                value='PORD',  # Default to PORD
                 placeholder="Select Y-axis feature for gradient visualization"
             ),
             dcc.Graph(id='gradient-plot')
@@ -418,37 +406,6 @@ def update_cross_plot_and_insights(x_feature, y_feature, remove_outliers):
 
 
 @app.callback(
-    Output('lithology-content', 'children'),
-    [Input('depth-slider', 'value'), Input('lithology-y-axis-dropdown', 'value'),
-     Input('remove-outliers-checkbox', 'value')]
-)
-def update_lithology_content(depth_value, y_feature, remove_outliers):
-    filtered_test_data = test_data[test_data['DEPTH'] <= depth_value]
-
-    if remove_outliers:
-        filtered_test_data = remove_outliers_and_negatives(filtered_test_data, features)
-
-    lithology_predictions = model.predict(filtered_test_data[features])
-    filtered_test_data['PREDICTED_LITHOLOGY'] = lithology_predictions
-
-    tab_content = []
-    for lithology in model.classes_:
-        lithology_data = filtered_test_data[filtered_test_data['PREDICTED_LITHOLOGY'] == lithology]
-        fig = px.scatter(lithology_data, x='DEPTH', y=y_feature, title=f'{lithology} Prediction',
-                         labels={y_feature: y_feature})
-        fig.update_layout(xaxis_title='Depth (m)', yaxis_title=y_feature)
-
-        lithology_insights = get_lithology_insights(lithology)
-        tab_content.append(html.Div([
-            html.H5(f'{lithology} Insights'),
-            html.P(lithology_insights),
-            dcc.Graph(figure=fig)
-        ]))
-
-    return html.Div(tab_content)
-
-
-@app.callback(
     Output('gradient-plot', 'figure'),
     [Input('depth-slider', 'value'), Input('gradient-y-axis-dropdown', 'value'),
      Input('remove-outliers-checkbox', 'value')]
@@ -463,6 +420,8 @@ def update_gradient_plot(depth_value, y_feature, remove_outliers):
         filtered_test_data, x="DEPTH", y=y_feature, z="GRZ", histfunc="avg",
         color_continuous_scale="Jet",
         title="Gradient Visualization",
+        nbinsx=50,  # Increase number of bins for higher resolution
+        nbinsy=50   # Increase number of bins for higher resolution
     )
     fig.update_layout(xaxis_title='Depth (m)', yaxis_title=y_feature)
     return fig
@@ -506,7 +465,7 @@ def update_chat(n_clicks, message, chat_history):
 
 
 @app.callback(
-    Output('chat-messages-typing', 'children'),
+    Output('chat-messages', 'children', allow_duplicate=True),
     [Input('chat-messages', 'children')],
     prevent_initial_call=True
 )
