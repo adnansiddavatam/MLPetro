@@ -11,6 +11,8 @@ from sklearn.metrics import confusion_matrix
 from datetime import datetime
 import openai
 from scipy.interpolate import interp1d
+import base64
+import io
 
 # Set up OpenAI API key
 openai.api_key = 'sk-proj-hYNNabthRwDe9YO98ELLT3BlbkFJg3hUpyz6C6mGkus0C4As'
@@ -259,9 +261,18 @@ app.layout = dbc.Container([
                 dbc.ModalBody(
                     [
                         html.Div(id='chat-messages', className="chat-messages"),
-                        dcc.Input(id='chat-input', type='text', placeholder='Type a message...',
-                                  className='chat-input'),
-                        html.Button('Send', id='send-button', className='send-button')
+                        html.Div([
+                            dcc.Input(id='chat-input', type='text', placeholder='Type a message...',
+                                      className='chat-input'),
+                            html.Button('Send', id='send-button', className='send-button'),
+                            dcc.Upload(
+                                id='upload-data',
+                                children=html.Div([
+                                    html.Img(src='https://img.icons8.com/ios-filled/50/000000/link.png', alt='Upload'),
+                                ]),
+                                className='upload-button'
+                            )
+                        ], className='input-group')
                     ]
                 ),
                 dbc.ModalFooter(
@@ -271,7 +282,7 @@ app.layout = dbc.Container([
             id="chat-modal",
             is_open=False,
             className="chat-modal"
-        ),
+        )
     ], style={'position': 'fixed', 'bottom': '20px', 'right': '20px', 'width': '350px', 'height': '500px'})
 ], fluid=True)
 
@@ -428,22 +439,11 @@ def update_gradient_plot(depth_value, x_feature, remove_outliers):
 
 
 @app.callback(
-    Output('chat-modal', 'is_open'),
-    [Input('open-chat-button', 'n_clicks'), Input('close-chat-button', 'n_clicks')],
-    [State('chat-modal', 'is_open')]
-)
-def toggle_chat_modal(n1, n2, is_open):
-    if n1 or n2:
-        return not is_open
-    return is_open
-
-
-@app.callback(
     [Output('chat-messages', 'children'), Output('chat-input', 'value')],
-    [Input('send-button', 'n_clicks')],
-    [State('chat-input', 'value'), State('chat-messages', 'children')]
+    [Input('send-button', 'n_clicks'), Input('upload-data', 'contents')],
+    [State('chat-input', 'value'), State('chat-messages', 'children'), State('upload-data', 'filename')]
 )
-def update_chat(n_clicks, message, chat_history):
+def update_chat(n_clicks, file_contents, message, chat_history, filename):
     if chat_history is None:
         chat_history = []
 
@@ -459,24 +459,43 @@ def update_chat(n_clicks, message, chat_history):
                                            'margin-bottom': '10px'})
         chat_history.append(typing_animation)
 
-        return chat_history, ""
+        bot_response = get_ai_response(message, train_data, test_data, features)
+        chat_history[-1] = html.Div(bot_response, className='bot-message',
+                                    style={'background-color': '#FFFFFF', 'padding': '10px', 'border-radius': '10px',
+                                           'margin-bottom': '10px'})
+
+    if file_contents:
+        content_type, content_string = file_contents.split(',')
+        decoded = base64.b64decode(content_string)
+        try:
+            if 'csv' in filename:
+                # Assume that the user uploaded a CSV file
+                df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+            elif 'xls' in filename:
+                # Assume that the user uploaded an excel file
+                df = pd.read_excel(io.BytesIO(decoded))
+
+            response_message = f"File {filename} uploaded successfully. Here's a preview:\n{df.head().to_dict()}"
+        except Exception as e:
+            response_message = f"There was an error processing the file {filename}: {str(e)}"
+
+        file_message = html.Div(response_message, className='user-message',
+                                style={'background-color': '#DCF8C6', 'padding': '10px', 'border-radius': '10px',
+                                       'margin-bottom': '10px'})
+        chat_history.append(file_message)
 
     return chat_history, ""
 
 
 @app.callback(
-    Output('chat-messages', 'children', allow_duplicate=True),
-    [Input('chat-messages', 'children')],
-    prevent_initial_call=True
+    Output('chat-modal', 'is_open'),
+    [Input('open-chat-button', 'n_clicks'), Input('close-chat-button', 'n_clicks')],
+    [State('chat-modal', 'is_open')]
 )
-def simulate_typing_effect(chat_history):
-    if chat_history and chat_history[-1]['props']['children'] == "...":
-        question = chat_history[-2]['props']['children']
-        bot_response = get_ai_response(question, train_data, test_data, features)
-        chat_history[-1] = html.Div(bot_response, className='bot-message',
-                                    style={'background-color': '#FFFFFF', 'padding': '10px', 'border-radius': '10px',
-                                           'margin-bottom': '10px'})
-    return chat_history
+def toggle_chat_modal(n1, n2, is_open):
+    if n1 or n2:
+        return not is_open
+    return is_open
 
 
 if __name__ == '__main__':
