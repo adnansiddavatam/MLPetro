@@ -5,14 +5,12 @@ from dash import dcc, html
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State
 import plotly.express as px
-import plotly.graph_objects as go
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import confusion_matrix
-from datetime import datetime
 import openai
+from datetime import datetime
 from scipy.interpolate import interp1d
 import base64
 import io
+from sklearn.ensemble import RandomForestClassifier
 
 # Set up OpenAI API key
 openai.api_key = 'sk-proj-hYNNabthRwDe9YO98ELLT3BlbkFJg3hUpyz6C6mGkus0C4As'
@@ -102,18 +100,8 @@ feature_descriptions = {
     'PE': "PE (b/e): Photoelectric effect log, indicates the lithology of the formation.",
     'PORD': "PORD (%): Porosity Density, measures the porosity of the formation using density measurements.",
     'ZDEN': "ZDEN (g/cm³): Density Log, measures the bulk density of the formation."
-    # Add descriptions for other features
+    # Add descriptions for other features as needed
 }
-
-
-# Function to generate lithology insights
-def get_lithology_insights(lithology):
-    insights = {
-        'Reservoir': "Reservoir: Typically indicates a porous and permeable rock that can store and transmit fluids, such as oil or gas.",
-        'Shale': "Shale: Fine-grained sedimentary rock that is typically impermeable and acts as a cap rock or seal.",
-        'Sandstone': "Sandstone: Clastic sedimentary rock composed mainly of sand-sized mineral particles or rock fragments."
-    }
-    return insights.get(lithology, "Unknown lithology: No information available.")
 
 
 def extract_unit(description):
@@ -123,9 +111,7 @@ def extract_unit(description):
 def remove_outliers_and_negatives(data, features):
     for feature in features:
         if feature in data.columns:
-            # Remove negative values
             data = data[data[feature] >= 0]
-            # Remove outliers using the IQR method
             Q1 = data[feature].quantile(0.25)
             Q3 = data[feature].quantile(0.75)
             IQR = Q3 - Q1
@@ -148,10 +134,7 @@ def get_ai_response(question, train_data, test_data, features):
         "Please analyze the provided data and answer questions based on this context."
     )
 
-    # Prepare a sample of the data to provide context
     data_sample = train_data.head(10).to_dict()
-
-    # Combine the context with the data sample
     detailed_context = f"{project_context}\n\nHere is a sample of the data:\n{data_sample}\n\nQuestion: {question}"
 
     try:
@@ -169,22 +152,19 @@ def get_ai_response(question, train_data, test_data, features):
 
 def interpolate_data(x, y, method='linear'):
     if len(x) < 2:
-        return x, y  # Not enough data to interpolate
+        return x, y
     f = interp1d(x, y, kind=method, fill_value="extrapolate")
     x_new = np.linspace(min(x), max(x), num=len(x) * 10)
     y_new = f(x_new)
     return x_new, y_new
 
 
-# Load data paths
 train_data_path = r'100082406303W600_136968569_TVD.csv'
 test_data_path = r'generate_data.csv'
 
-# Feature and target columns
 features = ['DEPTH', 'C13Z', 'C24Z', 'CALZ', 'CN', 'CNCD', 'GRZ', 'LSN', 'PE', 'PORD', 'SSN', 'TENZ', 'ZCOR', 'ZDEN']
 target = 'LABEL'
 
-global train_data, test_data, feature_importance, sorted_idx
 train_data, test_data = load_data(train_data_path, test_data_path)
 if train_data is None or test_data is None:
     raise ValueError("Failed to load data.")
@@ -287,7 +267,6 @@ app.layout = dbc.Container([
     ], style={'position': 'fixed', 'bottom': '20px', 'right': '20px', 'width': '350px', 'height': '500px'})
 ], fluid=True)
 
-
 @app.callback(
     Output('tab-content', 'children'),
     [Input('tabs', 'active_tab'), Input('depth-slider', 'value'), Input('remove-outliers-checkbox', 'value')]
@@ -355,7 +334,7 @@ def render_tab_content(active_tab, depth_value, remove_outliers):
             dcc.Dropdown(
                 id='gradient-y-axis-dropdown',
                 options=[{'label': feature, 'value': feature} for feature in features],
-                value='PORD',  # Default to PORD
+                value='PORD',
                 placeholder="Select Y-axis feature for gradient visualization"
             ),
             dcc.Graph(id='gradient-plot')
@@ -399,13 +378,12 @@ def update_cross_plot_and_insights(x_feature, y_feature, remove_outliers):
         plot_data = remove_outliers_and_negatives(plot_data, [x_feature, y_feature])
 
     fig = px.scatter(plot_data, x=x_feature, y=y_feature, color='LABEL')
-    x_unit = extract_unit(feature_descriptions[x_feature])
-    y_unit = extract_unit(feature_descriptions[y_feature])
+    x_unit = extract_unit(feature_descriptions.get(x_feature, "No description available."))
+    y_unit = extract_unit(feature_descriptions.get(y_feature, "No description available."))
     fig.update_layout(title=f'Cross-Plot: {x_feature} vs {y_feature}',
                       xaxis_title=f'{x_feature.split()[0]} ({x_unit})',
                       yaxis_title=f'{y_feature.split()[0]} ({y_unit})')
 
-    # Get feature descriptions
     x_description = feature_descriptions.get(x_feature, "No description available.")
     y_description = feature_descriptions.get(y_feature, "No description available.")
 
@@ -432,8 +410,8 @@ def update_gradient_plot(depth_value, x_feature, remove_outliers):
         filtered_test_data, x=x_feature, y="DEPTH", z="GRZ", histfunc="avg",
         color_continuous_scale="Jet",
         title="Gradient Visualization",
-        nbinsx=50,  # Increase number of bins for higher resolution
-        nbinsy=50   # Increase number of bins for higher resolution
+        nbinsx=50,
+        nbinsy=50
     )
     fig.update_layout(xaxis_title=x_feature, yaxis_title='Depth (m)')
     return fig
@@ -442,7 +420,8 @@ def update_gradient_plot(depth_value, x_feature, remove_outliers):
 @app.callback(
     [Output('chat-messages', 'children'), Output('chat-input', 'value'), Output('uploaded-file-store', 'data')],
     [Input('send-button', 'n_clicks'), Input('upload-data', 'contents')],
-    [State('chat-input', 'value'), State('chat-messages', 'children'), State('upload-data', 'filename'), State('uploaded-file-store', 'data')]
+    [State('chat-input', 'value'), State('chat-messages', 'children'), State('upload-data', 'filename'),
+     State('uploaded-file-store', 'data')]
 )
 def update_chat(n_clicks, file_contents, message, chat_history, filename, stored_file):
     if chat_history is None:
@@ -454,7 +433,6 @@ def update_chat(n_clicks, file_contents, message, chat_history, filename, stored
                                        'margin-bottom': '10px'})
         chat_history.append(user_message)
 
-        # Simulate typing animation
         typing_animation = html.Div("...", className='bot-message',
                                     style={'background-color': '#FFFFFF', 'padding': '10px', 'border-radius': '10px',
                                            'margin-bottom': '10px'})
@@ -470,10 +448,8 @@ def update_chat(n_clicks, file_contents, message, chat_history, filename, stored
         decoded = base64.b64decode(content_string)
         try:
             if 'csv' in filename:
-                # Assume that the user uploaded a CSV file
                 df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
             elif 'xls' in filename:
-                # Assume that the user uploaded an excel file
                 df = pd.read_excel(io.BytesIO(decoded))
 
             response_message = f"File {filename} uploaded successfully. Here's a preview:\n{df.head().to_dict()}"
