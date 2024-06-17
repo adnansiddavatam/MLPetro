@@ -109,16 +109,21 @@ def extract_unit(description):
 
 
 def remove_outliers_and_negatives(data, features):
+    cleaned_data = data.copy()
     for feature in features:
-        if feature in data.columns:
-            data = data[data[feature] >= 0]
-            Q1 = data[feature].quantile(0.25)
-            Q3 = data[feature].quantile(0.75)
+        if feature in cleaned_data.columns:
+            # Remove negative values
+            cleaned_data = cleaned_data[cleaned_data[feature] >= 0]
+            # Calculate IQR
+            Q1 = cleaned_data[feature].quantile(0.25)
+            Q3 = cleaned_data[feature].quantile(0.75)
             IQR = Q3 - Q1
             lower_bound = Q1 - 1.5 * IQR
             upper_bound = Q3 + 1.5 * IQR
-            data = data[(data[feature] >= lower_bound) & (data[feature] <= upper_bound)]
-    return data
+            # Remove outliers
+            cleaned_data = cleaned_data[(cleaned_data[feature] >= lower_bound) & (cleaned_data[feature] <= upper_bound)]
+    return cleaned_data
+
 
 
 def get_ai_response(question, train_data, test_data, features):
@@ -160,7 +165,7 @@ def interpolate_data(x, y, method='linear'):
 
 
 train_data_path = r'100082406303W600_136968569_TVD.csv'
-test_data_path = r'generate_data.csv'
+test_data_path = r'generated_geological_data.csv'
 
 features = ['DEPTH', 'C13Z', 'C24Z', 'CALZ', 'CN', 'CNCD', 'GRZ', 'LSN', 'PE', 'PORD', 'SSN', 'TENZ', 'ZCOR', 'ZDEN']
 target = 'LABEL'
@@ -356,14 +361,26 @@ def update_interpolation_content(method, depth_value, remove_outliers):
     for class_label in model.classes_:
         x = filtered_test_data['DEPTH']
         y = filtered_test_data[f'PREDICTED_PROBA_{class_label}']
+
+        # Create DataFrame for removing outliers
+        data_for_cleaning = pd.DataFrame({'DEPTH': x, 'PREDICTED_PROBA': y})
+        cleaned_data = remove_outliers_and_negatives(data_for_cleaning, ['DEPTH', 'PREDICTED_PROBA'])
+
+        x_cleaned = cleaned_data['DEPTH']
+        y_cleaned = cleaned_data['PREDICTED_PROBA']
+
         if method in ['linear', 'cubic']:
-            x_new, y_new = interpolate_data(x, y, method=method)
+            x_new, y_new = interpolate_data(x_cleaned, y_cleaned, method=method)
             fig = px.line(x=x_new, y=y_new, title=f'{method.capitalize()} Interpolation of {class_label}')
+            fig.update_traces(line=dict(color='blue'))
         else:
-            fig = px.scatter(x=x, y=y, title=f'Smoothed Probability of {class_label}')
-            fig.add_scatter(x=x, y=y, mode='lines', name=f'Smoothed {class_label}')
+            fig = px.scatter(x=x_cleaned, y=y_cleaned, title=f'Smoothed Probability of {class_label}')
+            fig.add_scatter(x=x_cleaned, y=y_cleaned, mode='lines', name=f'Smoothed {class_label}',
+                            line=dict(color='blue'))
+
         fig.update_layout(xaxis_title='Depth (m)', yaxis_title=f'{class_label} Probability (%)')
         tab_content.append(dcc.Graph(figure=fig))
+
     return html.Div(tab_content)
 
 
