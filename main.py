@@ -10,7 +10,7 @@ from scipy.signal import savgol_filter
 from flask_caching import Cache
 import plotly.colors as colors
 # Constants
-CSV_FILE_PATH = "generated_geological_data.csv"
+CSV_FILE_PATH = "real_las_data.csv"
 PLACEHOLDER_VALUE = -999.25
 DEFAULT_NOISE_REDUCTION_WINDOW = 21
 DEFAULT_EMA_WINDOW = 5
