@@ -164,64 +164,83 @@ app.layout = html.Div(
 
 
 def calculate_rock_types(cn, grz):
-    reservoir = np.where((cn > 10) & (grz < 100), 0.33, 0)
-    shale = np.where((cn <= 10) & (grz >= 100), 0.66, 0)
-    sandstone = np.where((cn <= 10) & (grz < 100), 1, 0)
-    return reservoir + shale + sandstone
+    try:
+        reservoir = np.where((cn > 10) & (grz < 100), 0.33, 0)
+        shale = np.where((cn <= 10) & (grz >= 100), 0.66, 0)
+        sandstone = np.where((cn <= 10) & (grz < 100), 1, 0)
+        return reservoir + shale + sandstone
+    except Exception as e:
+        print(f"Error in calculate_rock_types: {str(e)}")
+        return np.zeros_like(cn)
+
 @app.callback(
     Output('prediction-heatmap', 'figure'),
     [Input('depth-slider', 'value')]
 )
 def update_prediction_heatmap(depth_range):
-    filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])]
+    try:
+        filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])]
 
-    combined = calculate_rock_types(filtered_data['CN'], filtered_data['GRZ'])
+        if 'CN' not in filtered_data.columns or 'GRZ' not in filtered_data.columns:
+            raise ValueError("Required columns 'CN' and 'GRZ' not found in the data.")
 
-    colorscale = [
-        [0, 'rgb(255,255,255)'],  # White for no prediction
-        [0.33, 'rgb(255,0,0)'],  # Red for Reservoir
-        [0.66, 'rgb(0,255,0)'],  # Green for Shale
-        [1, 'rgb(0,0,255)']  # Blue for Sandstone
-    ]
+        if filtered_data.empty:
+            raise ValueError("No data available for the selected depth range.")
 
-    heatmap = go.Heatmap(
-        z=[combined],
-        x=filtered_data['DEPTH'],
-        colorscale=colorscale,
-        zmin=0,
-        zmax=1,
-        showscale=False
-    )
+        combined = calculate_rock_types(filtered_data['CN'], filtered_data['GRZ'])
 
-    layout = go.Layout(
-        xaxis_title='Depth',
-        yaxis=dict(
-            showticklabels=False,
-            showgrid=False,
-            zeroline=False,
-        ),
-        height=250,
-        margin=dict(l=50, r=50, t=50, b=50)
-    )
+        colorscale = [
+            [0, 'rgb(255,255,255)'],  # White for no prediction
+            [0.33, 'rgb(255,0,0)'],  # Red for Reservoir
+            [0.66, 'rgb(0,255,0)'],  # Green for Shale
+            [1, 'rgb(0,0,255)']  # Blue for Sandstone
+        ]
 
-    # Create color legend
-    legend_traces = [
-        go.Scatter(
-            x=[None],
-            y=[None],
-            mode='markers',
-            marker=dict(size=10, color=color),
-            name=name,
-            showlegend=True
-        ) for color, name in [('rgb(255,0,0)', 'Reservoir'),
-                              ('rgb(0,255,0)', 'Shale'),
-                              ('rgb(0,0,255)', 'Sandstone')]
-    ]
+        heatmap = go.Heatmap(
+            z=[combined],
+            x=filtered_data['DEPTH'],
+            colorscale=colorscale,
+            zmin=0,
+            zmax=1,
+            showscale=False
+        )
 
-    fig = go.Figure(data=[heatmap] + legend_traces, layout=layout)
+        layout = go.Layout(
+            xaxis_title='Depth',
+            xaxis=dict(range=depth_range),  # Set x-axis range to match depth slider
+            yaxis=dict(
+                showticklabels=False,
+                showgrid=False,
+                zeroline=False,
+            ),
+            height=250,
+            margin=dict(l=50, r=50, t=50, b=50)
+        )
 
-    return fig
+        # Create color legend
+        legend_traces = [
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode='markers',
+                marker=dict(size=10, color=color),
+                name=name,
+                showlegend=True
+            ) for color, name in [('rgb(255,0,0)', 'Reservoir'),
+                                  ('rgb(0,255,0)', 'Shale'),
+                                  ('rgb(0,0,255)', 'Sandstone')]
+        ]
 
+        fig = go.Figure(data=[heatmap] + legend_traces, layout=layout)
+
+        return fig
+    except Exception as e:
+        print(f"Error in update_prediction_heatmap: {str(e)}")
+        return go.Figure(layout=go.Layout(
+            title=f"Error: {str(e)}",
+            height=250,
+            margin=dict(l=50, r=50, t=50, b=50)
+        ))
 
 
 
@@ -260,6 +279,7 @@ def update_heatmap(depth_range, selected_param):
 
     layout = go.Layout(
         xaxis_title='Depth',
+        xaxis=dict(range=depth_range),  # Set x-axis range to match depth slider
         height=250,
         margin=dict(l=50, r=50, t=30, b=50)
     )
@@ -279,7 +299,6 @@ def update_heatmap(depth_range, selected_param):
 )
 @cache.memoize(timeout=300)  # Cache the result for 5 minutes
 def update_graph(depth_range, selected_param, noise_reduction_window, interpolation, analysis_features, ema_window):
-    """Update the graph and statistics based on user inputs."""
     try:
         filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
         filtered_data = filtered_data.dropna(subset=['DEPTH', selected_param])
@@ -341,12 +360,15 @@ def update_graph(depth_range, selected_param, noise_reduction_window, interpolat
             title=f"{selected_param} vs Depth",
             xaxis_title="Depth",
             yaxis_title=selected_param,
+            xaxis=dict(range=depth_range),  # Set x-axis range to match depth slider
             height=600,
             font=dict(family="Roboto"),
             plot_bgcolor='white',
             paper_bgcolor='white',
-            xaxis=dict(showgrid=True, gridcolor='lightgray'),
-            yaxis=dict(showgrid=True, gridcolor='lightgray')
+            xaxis_showgrid=True,
+            xaxis_gridcolor='lightgray',
+            yaxis_showgrid=True,
+            yaxis_gridcolor='lightgray'
         )
 
         # Calculate statistics
@@ -365,6 +387,9 @@ def update_graph(depth_range, selected_param, noise_reduction_window, interpolat
         return fig, "", stats
     except Exception as e:
         return go.Figure(), f"An error occurred: {str(e)}", ""
+
+
+
 
 # Run the app
 if __name__ == '__main__':
