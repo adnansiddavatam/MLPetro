@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 import numpy as np
 import dash
@@ -5,9 +6,12 @@ from dash import dcc, html
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State
 import plotly.express as px
+import plotly.graph_objects as go
 import openai
 from datetime import datetime
 from scipy.interpolate import interp1d
+from scipy import interpolate
+import scipy.signal
 import base64
 import io
 from sklearn.ensemble import RandomForestClassifier
@@ -20,15 +24,26 @@ def log(message):
     print(f"{datetime.now()} - {message}")
 
 
-def load_data(train_path, test_path):
+def load_data(train_path, test_path, trim=True, remove_outliers=False):
     try:
-        log("Loading data...")
+        logging.info("Loading data...")
         train_data = pd.read_csv(train_path)
         test_data = pd.read_csv(test_path)
-        log("Data loaded successfully.")
+
+        if trim:
+            logging.info("Trimming data to 10%...")
+            train_data = train_data.sample(frac=0.1, random_state=42)
+            test_data = test_data.sample(frac=0.1, random_state=42)
+
+        if remove_outliers:
+            logging.info("Removing outliers...")
+            train_data = remove_outliers_and_negatives(train_data, train_data.columns)
+            test_data = remove_outliers_and_negatives(test_data, test_data.columns)
+
+        logging.info("Data loaded successfully.")
         return train_data, test_data
     except Exception as e:
-        log(f"Error loading data: {e}")
+        logging.error(f"Error loading data: {e}")
         return None, None
 
 
@@ -154,6 +169,37 @@ def get_ai_response(question, train_data, test_data, features):
         log(f"OpenAI API error: {e}")
         return f"API error occurred: {e}"
 
+
+def predict_points(x, y, x_pred, method='linear'):
+    """
+    Predicts points using linear or cubic interpolation.
+
+    Parameters:
+    x (array-like): Known x-coordinates
+    y (arr    x_pred (array-like): x-coordinates for which to predict y-values
+    method (str): Interpolation method, either 'linear' or 'cubic' (default: 'linear')
+
+    Returns:
+    array: Predicted y-values corresponding to x_pred
+    """
+
+    # Convert inputs to numpy arrays    x = np.array(x)
+    y = np.array(y)
+    x_pred = np.array(x_pred)
+
+    # Check if the method is valid
+    if method not in ['linear', 'cubic']:
+        raise ValueError("Method must be either 'linear' or 'cubic'")
+
+        # Perform int    if method == 'linear':
+        f = interpolate.interp1d(x, y, kind='linear', fill_value='extrapolate')
+    else:  # cubic
+        f = interpolate.interp1d(x, y, kind='cubic', fill_value='extrapolate')
+
+    # Predict y-values
+    y_pred = f(x_pred)
+
+    return y_pred
 
 def interpolate_data(x, y, method='linear'):
     if len(x) < 2:
@@ -306,8 +352,8 @@ def render_tab_content(active_tab, depth_value, remove_outliers):
             dcc.Dropdown(
                 id='interpolation-method-dropdown',
                 options=[
-                    {'label': 'Interpolation - Linear', 'value': 'linear'},
-                    {'label': 'Interpolation - Cubic', 'value': 'cubic'},
+                    {'label': 'Linear Interpolation', 'value': 'linear'},
+                    {'label': 'Cubic Interpolation', 'value': 'cubic'},
                     {'label': 'Smoothing', 'value': 'smoothing'}
                 ],
                 value='linear',
@@ -348,41 +394,46 @@ def render_tab_content(active_tab, depth_value, remove_outliers):
 
 @app.callback(
     Output('interpolation-content', 'children'),
-    [Input('interpolation-method-dropdown', 'value'), Input('depth-slider', 'value'),
-     Input('remove-outliers-checkbox', 'value')]
+    [Input('interpolation-method-dropdown', 'value'),
+     Input('depth-slider', 'value')]
 )
-def update_interpolation_content(method, depth_value, remove_outliers):
-    filtered_test_data = test_data[test_data['DEPTH'] <= depth_value]
-
-    if remove_outliers:
-        filtered_test_data = remove_outliers_and_negatives(filtered_test_data, features)
+def update_interpolation_content(method, depth_value):
+    filtered_test_data = test_data[test_data['DEPTH'] <= depth_value].sort_values('DEPTH')
 
     tab_content = []
     for class_label in model.classes_:
         x = filtered_test_data['DEPTH']
         y = filtered_test_data[f'PREDICTED_PROBA_{class_label}']
 
-        # Create DataFrame for removing outliers
-        data_for_cleaning = pd.DataFrame({'DEPTH': x, 'PREDICTED_PROBA': y})
-        cleaned_data = remove_outliers_and_negatives(data_for_cleaning, ['DEPTH', 'PREDICTED_PROBA'])
+        fig = go.Figure()
 
-        x_cleaned = cleaned_data['DEPTH']
-        y_cleaned = cleaned_data['PREDICTED_PROBA']
+        # Original data points
+        fig.add_trace(go.Scatter(x=x, y=y, mode='markers', name='Original Data',
+                                 marker=dict(size=8, color='black', symbol='square-open')))
+
+        # Generate more x points for smoother interpolation
+        x_new = np.linspace(x.min(), x.max(), num=len(x)*10)
 
         if method in ['linear', 'cubic']:
-            x_new, y_new = interpolate_data(x_cleaned, y_cleaned, method=method)
-            fig = px.line(x=x_new, y=y_new, title=f'{method.capitalize()} Interpolation of {class_label}')
-            fig.update_traces(line=dict(color='blue'))
-        else:
-            fig = px.scatter(x=x_cleaned, y=y_cleaned, title=f'Smoothed Probability of {class_label}')
-            fig.add_scatter(x=x_cleaned, y=y_cleaned, mode='lines', name=f'Smoothed {class_label}',
-                            line=dict(color='blue'))
+            # Use the predict_points function for interpolation
+            y_new = predict_points(x, y, x_new, method=method)
+            fig.add_trace(go.Scatter(x=x_new, y=y_new, mode='lines', name=f'{method.capitalize()} Interpolation',
+                                     line=dict(color='red', width=2)))
+        elif method == 'smoothing':
+            # Use the existing smoothing method
+            y_smooth = scipy.signal.savgol_filter(y, window_length=5, polyorder=2)
+            fig.add_trace(go.Scatter(x=x, y=y_smooth, mode='lines', name='Smoothed',
+                                     line=dict(color='red', width=2)))
 
-        fig.update_layout(xaxis_title='Depth (m)', yaxis_title=f'{class_label} Probability (%)')
+        fig.update_layout(
+            title=f'{method.capitalize()} of {class_label} Probability',
+            xaxis_title='Depth (m)',
+            yaxis_title=f'{class_label} Probability (%)',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
         tab_content.append(dcc.Graph(figure=fig))
 
     return html.Div(tab_content)
-
 
 @app.callback(
     [Output('cross-plot', 'figure'), Output('ai-insights', 'children')],
