@@ -228,25 +228,29 @@ def update_parameter_heatmap(depth_range, selected_param):
     if filtered_data.empty:
         return go.Figure(layout=go.Layout(title="No valid data in the selected range"))
     
-    param_values = filtered_data[selected_param].values
-    depths = filtered_data['DEPTH'].values
+    # Create a 2D array of parameter values
+    depth_bins = np.linspace(depth_range[0], depth_range[1], 200)
+    param_bins = np.linspace(filtered_data[selected_param].min(), filtered_data[selected_param].max(), 100)
     
-    # Create 2D histogram with appropriate bin sizes
-    hist, x_edges, y_edges = np.histogram2d(param_values, depths, bins=[100, 200])
+    z = np.zeros((len(depth_bins)-1, len(param_bins)-1))
     
-    # Normalize the histogram
-    hist_normalized = hist / hist.sum()
+    for i in range(len(depth_bins)-1):
+        mask = (filtered_data['DEPTH'] >= depth_bins[i]) & (filtered_data['DEPTH'] < depth_bins[i+1])
+        if mask.any():
+            z[i, :] = np.interp(param_bins[:-1], 
+                                filtered_data.loc[mask, selected_param].sort_values(),
+                                np.linspace(0, 1, mask.sum()))
     
-    # Apply light Gaussian filter for smoothing
-    hist_smooth = scipy.ndimage.gaussian_filter(hist_normalized, sigma=1)
+    # Apply light smoothing
+    z_smooth = scipy.ndimage.gaussian_filter(z, sigma=1)
     
     # Create a surface plot
     surface = go.Surface(
-        z=hist_smooth.T,
-        x=x_edges[:-1],
-        y=y_edges[:-1],
+        z=z_smooth,
+        x=param_bins[:-1],
+        y=depth_bins[:-1],
         colorscale='Viridis',
-        colorbar=dict(title='Normalized Frequency'),
+        colorbar=dict(title=selected_param),
         contours=dict(
             z=dict(show=True, usecolormap=True, project_z=True)
         )
@@ -257,8 +261,8 @@ def update_parameter_heatmap(depth_range, selected_param):
         scene=dict(
             xaxis_title=f'{selected_param}',
             yaxis_title='Depth',
-            zaxis_title='Normalized Frequency',
-            xaxis=dict(autorange='reversed' if selected_param == 'PHIT' else True),
+            zaxis_title='Intensity',
+            xaxis=dict(autorange='reversed' if selected_param in ['PHIT', 'POR'] else True),
             yaxis=dict(autorange='reversed'),
         ),
         height=800,
