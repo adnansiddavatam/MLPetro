@@ -1,3 +1,4 @@
+import scipy.ndimage
 import pandas as pd
 import plotly.graph_objects as go
 import dash
@@ -9,6 +10,7 @@ from sklearn.linear_model import LinearRegression
 from scipy.signal import savgol_filter
 from flask_caching import Cache
 import plotly.colors as colors
+
 # Constants
 CSV_FILE_PATH = "real_las_data.csv"
 PLACEHOLDER_VALUE = -999.25
@@ -152,6 +154,12 @@ app.layout = html.Div(
                       'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'}),
 
             html.Div([
+                html.H3("Parameter Distribution Heatmap", style={'fontWeight': '400', 'color': '#2c3e50', 'marginBottom': '20px'}),
+                dcc.Graph(id='parameter-heatmap')
+            ], style={'marginTop': '20px', 'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
+                      'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'}),
+
+            html.Div([
                 html.H3("Rock Type Prediction",
                         style={'fontWeight': '400', 'color': '#2c3e50', 'marginBottom': '20px'}),
                 dcc.Graph(id='prediction-heatmap')
@@ -162,7 +170,104 @@ app.layout = html.Div(
                   'boxShadow': '0 2px 10px rgba(0,0,0,0.1)', 'marginBottom': '20px'}),
     ])
 
+@app.callback(
+    Output('advanced-settings-pane', 'style'),
+    Input('advanced-settings-button', 'n_clicks'),
+    State('advanced-settings-pane', 'style')
+)
+def toggle_advanced_settings(n_clicks, current_style):
+    if n_clicks % 2 == 0:
+        return {'display': 'none'}
+    else:
+        return {'display': 'block'}
 
+def calculate_ema(data, window):
+    return data.ewm(span=window, adjust=False).mean()
+
+@app.callback(
+    Output('heatmap-graph', 'figure'),
+    [Input('depth-slider', 'value'),
+     Input('param-dropdown', 'value')]
+)
+def update_heatmap(depth_range, selected_param):
+    filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
+    filtered_data = filtered_data.dropna(subset=['DEPTH', selected_param])
+
+    if filtered_data.empty:
+        return go.Figure(layout=go.Layout(
+            title="No valid data in the selected range",
+            height=250,
+            margin=dict(l=50, r=50, t=30, b=50)
+        ))
+
+    heatmap = go.Heatmap(
+        z=[filtered_data[selected_param]],
+        y=[selected_param],
+        x=filtered_data['DEPTH'],
+        colorscale='Viridis'
+    )
+
+    layout = go.Layout(
+        xaxis_title='Depth',
+        xaxis=dict(range=depth_range),
+        height=250,
+        margin=dict(l=50, r=50, t=30, b=50)
+    )
+
+    return {'data': [heatmap], 'layout': layout}
+
+@app.callback(
+    Output('parameter-heatmap', 'figure'),
+    [Input('depth-slider', 'value'),
+     Input('param-dropdown', 'value')]
+)
+def update_parameter_heatmap(depth_range, selected_param):
+    filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
+    filtered_data = filtered_data.dropna(subset=['DEPTH', selected_param])
+    
+    if filtered_data.empty:
+        return go.Figure(layout=go.Layout(title="No valid data in the selected range"))
+    
+    param_values = filtered_data[selected_param].values
+    depths = filtered_data['DEPTH'].values
+    
+    # Create 2D histogram with appropriate bin sizes
+    hist, x_edges, y_edges = np.histogram2d(param_values, depths, bins=[100, 200])
+    
+    # Normalize the histogram
+    hist_normalized = hist / hist.sum()
+    
+    # Apply light Gaussian filter for smoothing
+    hist_smooth = scipy.ndimage.gaussian_filter(hist_normalized, sigma=1)
+    
+    # Create a surface plot
+    surface = go.Surface(
+        z=hist_smooth.T,
+        x=x_edges[:-1],
+        y=y_edges[:-1],
+        colorscale='Viridis',
+        colorbar=dict(title='Normalized Frequency'),
+        contours=dict(
+            z=dict(show=True, usecolormap=True, project_z=True)
+        )
+    )
+    
+    layout = go.Layout(
+        title=f'{selected_param} Distribution Heatmap',
+        scene=dict(
+            xaxis_title=f'{selected_param}',
+            yaxis_title='Depth',
+            zaxis_title='Normalized Frequency',
+            xaxis=dict(autorange='reversed' if selected_param == 'PHIT' else True),
+            yaxis=dict(autorange='reversed'),
+        ),
+        height=800,
+        width=800,
+        margin=dict(l=65, r=50, b=65, t=90)
+    )
+    
+    fig = go.Figure(data=[surface], layout=layout)
+    return fig
 def calculate_rock_types(cn, grz):
     try:
         reservoir = np.where((cn > 10) & (grz < 100), 0.33, 0)
@@ -180,6 +285,7 @@ def calculate_rock_types(cn, grz):
 def update_prediction_heatmap(depth_range):
     try:
         filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])]
+        filtered_data = filtered_data.dropna(subset=['DEPTH', 'CN', 'GRZ'])
 
         if 'CN' not in filtered_data.columns or 'GRZ' not in filtered_data.columns:
             raise ValueError("Required columns 'CN' and 'GRZ' not found in the data.")
@@ -207,7 +313,7 @@ def update_prediction_heatmap(depth_range):
 
         layout = go.Layout(
             xaxis_title='Depth',
-            xaxis=dict(range=depth_range),  # Set x-axis range to match depth slider
+            xaxis=dict(range=depth_range),
             yaxis=dict(
                 showticklabels=False,
                 showgrid=False,
@@ -217,7 +323,6 @@ def update_prediction_heatmap(depth_range):
             margin=dict(l=50, r=50, t=50, b=50)
         )
 
-        # Create color legend
         legend_traces = [
             go.Scatter(
                 x=[None],
@@ -229,8 +334,7 @@ def update_prediction_heatmap(depth_range):
             ) for color, name in [('rgb(255,0,0)', 'Reservoir'),
                                   ('rgb(0,255,0)', 'Shale'),
                                   ('rgb(0,0,255)', 'Sandstone')]
-        ]
-
+        ]        
         fig = go.Figure(data=[heatmap] + legend_traces, layout=layout)
 
         return fig
@@ -241,50 +345,6 @@ def update_prediction_heatmap(depth_range):
             height=250,
             margin=dict(l=50, r=50, t=50, b=50)
         ))
-
-
-
-@app.callback(
-    Output('advanced-settings-pane', 'style'),
-    Input('advanced-settings-button', 'n_clicks'),
-    State('advanced-settings-pane', 'style')
-)
-def toggle_advanced_settings(n_clicks, current_style):
-    """Toggle the visibility of advanced settings pane."""
-    if n_clicks % 2 == 0:
-        return {'display': 'none'}
-    else:
-        return {'display': 'block'}
-
-
-def calculate_ema(data, window):
-    """Calculate Exponential Moving Average."""
-    return data.ewm(span=window, adjust=False).mean()
-
-
-@app.callback(
-    Output('heatmap-graph', 'figure'),
-    [Input('depth-slider', 'value'),
-     Input('param-dropdown', 'value')]
-)
-def update_heatmap(depth_range, selected_param):
-    filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
-
-    heatmap = go.Heatmap(
-        z=[filtered_data[selected_param]],
-        y=[selected_param],
-        x=filtered_data['DEPTH'],
-        colorscale='Viridis'
-    )
-
-    layout = go.Layout(
-        xaxis_title='Depth',
-        xaxis=dict(range=depth_range),  # Set x-axis range to match depth slider
-        height=250,
-        margin=dict(l=50, r=50, t=30, b=50)
-    )
-
-    return {'data': [heatmap], 'layout': layout}
 
 @app.callback(
     [Output('depth-graph', 'figure'),
@@ -302,6 +362,9 @@ def update_graph(depth_range, selected_param, noise_reduction_window, interpolat
     try:
         filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
         filtered_data = filtered_data.dropna(subset=['DEPTH', selected_param])
+
+        if filtered_data.empty:
+            raise ValueError("No valid data in the selected range")
 
         fig = go.Figure()
 
@@ -387,9 +450,6 @@ def update_graph(depth_range, selected_param, noise_reduction_window, interpolat
         return fig, "", stats
     except Exception as e:
         return go.Figure(), f"An error occurred: {str(e)}", ""
-
-
-
 
 # Run the app
 if __name__ == '__main__':
