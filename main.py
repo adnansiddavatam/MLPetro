@@ -1,549 +1,549 @@
-import logging
+import scipy.ndimage
 import pandas as pd
-import numpy as np
+import plotly.graph_objects as go
 import dash
 from dash import dcc, html
-import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State
-import plotly.express as px
-import plotly.graph_objects as go
-import openai
-from datetime import datetime
-from scipy.interpolate import interp1d
-from scipy import interpolate
-import scipy.signal
-import base64
-import io
-from sklearn.ensemble import RandomForestClassifier
-
-# Set up OpenAI API key
-openai.api_key = 'sk-proj-hYNNabthRwDe9YO98ELLT3BlbkFJg3hUpyz6C6mGkus0C4As'
-
-
-def log(message):
-    print(f"{datetime.now()} - {message}")
-
-
-def load_data(train_path, test_path, trim=True, remove_outliers=False):
-    try:
-        logging.info("Loading data...")
-        train_data = pd.read_csv(train_path)
-        test_data = pd.read_csv(test_path)
-
-        if trim:
-            logging.info("Trimming data to 10%...")
-            train_data = train_data.sample(frac=0.1, random_state=42)
-            test_data = test_data.sample(frac=0.1, random_state=42)
-
-        if remove_outliers:
-            logging.info("Removing outliers...")
-            train_data = remove_outliers_and_negatives(train_data, train_data.columns)
-            test_data = remove_outliers_and_negatives(test_data, test_data.columns)
-
-        logging.info("Data loaded successfully.")
-        return train_data, test_data
-    except Exception as e:
-        logging.error(f"Error loading data: {e}")
-        return None, None
-
-
-def convert_to_percentage(data, columns):
-    for col in columns:
-        if col in data.columns:
-            data[col] = data[col] * 100
-    return data
-
-
-def create_labels(data):
-    conditions = [
-        (data['CN'] > 10) & (data['GRZ'] < 100),
-        (data['CN'] <= 10) & (data['GRZ'] >= 100),
-        (data['CN'] <= 10) & (data['GRZ'] < 100)
-    ]
-    choices = ['Reservoir', 'Shale', 'Sandstone']
-    data['LABEL'] = np.select(conditions, choices, default='Unknown')
-    return data
-
-
-def prepare_data(train_data, test_data, features, target):
-    try:
-        log("Preparing features and target variables...")
-        train_data = create_labels(train_data)
-        X_train = train_data[features]
-        y_train = train_data[target]
-
-        missing_cols = set(features) - set(test_data.columns)
-        for col in missing_cols:
-            test_data[col] = 0
-        X_test = test_data[features]
-
-        if target in test_data.columns:
-            test_data = create_labels(test_data)
-            y_test = test_data[target]
-            log(f"Target column '{target}' found in test data.")
-        else:
-            y_test = None
-            log(f"Target column '{target}' NOT found in test data.")
-
-        log(f"Data preparation complete. y_test is None: {y_test is None}")
-        if y_test is not None:
-            log(f"y_test sample: {y_test.head()}")
-        return X_train, y_train, X_test, y_test
-    except Exception as e:
-        log(f"Error preparing data: {e}")
-        return None, None, None, None
-
-
-def train_model(X_train, y_train):
-    try:
-        log("Training the model...")
-        model = RandomForestClassifier(n_estimators=100, max_depth=20, n_jobs=-1, random_state=42)
-        model.fit(X_train, y_train)
-        log("Model trained successfully.")
-        return model
-    except Exception as e:
-        log(f"Error training model: {e}")
-        return None
-
-
-# Knowledge base for feature descriptions with units
-feature_descriptions = {
-    'DEPTH': "Depth (m): This measures the depth at which the readings are taken.",
-    'C13Z': "C13Z (Bg/kg): This is a measurement of Carbon 13 isotopic composition.",
-    'GRZ': "GRZ (API units): Gamma Ray Log, measures the natural radioactivity of the formation.",
-    'CN': "CN (%): Neutron Porosity Log, measures the hydrogen content in the formation.",
-    'PE': "PE (b/e): Photoelectric effect log, indicates the lithology of the formation.",
-    'PORD': "PORD (%): Porosity Density, measures the porosity of the formation using density measurements.",
-    'ZDEN': "ZDEN (g/cm³): Density Log, measures the bulk density of the formation."
-    # Add descriptions for other features as needed
-}
-
-
-def extract_unit(description):
-    return description.split("(")[-1].split(")")[0]
-
-
-def remove_outliers_and_negatives(data, features):
-    cleaned_data = data.copy()
-    for feature in features:
-        if feature in cleaned_data.columns:
-            # Remove negative values
-            cleaned_data = cleaned_data[cleaned_data[feature] >= 0]
-            # Calculate IQR
-            Q1 = cleaned_data[feature].quantile(0.25)
-            Q3 = cleaned_data[feature].quantile(0.75)
-            IQR = Q3 - Q1
-            lower_bound = Q1 - 1.5 * IQR
-            upper_bound = Q3 + 1.5 * IQR
-            # Remove outliers
-            cleaned_data = cleaned_data[(cleaned_data[feature] >= lower_bound) & (cleaned_data[feature] <= upper_bound)]
-    return cleaned_data
-
-
-
-def get_ai_response(question, train_data, test_data, features):
-    project_context = (
-        "You are a knowledgeable assistant for a lithology prediction project. "
-        "The project involves using machine learning models, specifically Random Forest Classifiers, to predict lithology "
-        "based on various features from depth data such as DEPTH, C13Z, GRZ, CN, PE, PORD, and ZDEN. "
-        "The features represent measurements taken from geological formations. "
-        "The goal is to classify formations as Reservoir, Shale, or Sandstone. "
-        "Additionally, the project includes visualizations of confusion matrices, feature importance, predicted probabilities, "
-        "cross-plots, and lithology predictions. "
-        "You are also equipped with a knowledge base that provides descriptions for each feature and insights into lithology types. "
-        "Please analyze the provided data and answer questions based on this context."
-    )
-
-    data_sample = train_data.head(10).to_dict()
-    detailed_context = f"{project_context}\n\nHere is a sample of the data:\n{data_sample}\n\nQuestion: {question}"
-
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": detailed_context}
-            ]
-        )
-        return response['choices'][0]['message']['content']
-    except openai.error.OpenAIError as e:
-        log(f"OpenAI API error: {e}")
-        return f"API error occurred: {e}"
-
-
-def predict_points(x, y, x_pred, method='linear'):
-    """
-    Predicts points using linear or cubic interpolation.
-
-    Parameters:
-    x (array-like): Known x-coordinates
-    y (arr    x_pred (array-like): x-coordinates for which to predict y-values
-    method (str): Interpolation method, either 'linear' or 'cubic' (default: 'linear')
-
-    Returns:
-    array: Predicted y-values corresponding to x_pred
-    """
-
-    # Convert inputs to numpy arrays    x = np.array(x)
-    y = np.array(y)
-    x_pred = np.array(x_pred)
-
-    # Check if the method is valid
-    if method not in ['linear', 'cubic']:
-        raise ValueError("Method must be either 'linear' or 'cubic'")
-
-        # Perform int    if method == 'linear':
-        f = interpolate.interp1d(x, y, kind='linear', fill_value='extrapolate')
-    else:  # cubic
-        f = interpolate.interp1d(x, y, kind='cubic', fill_value='extrapolate')
-
-    # Predict y-values
-    y_pred = f(x_pred)
-
-    return y_pred
-
-def interpolate_data(x, y, method='linear'):
-    if len(x) < 2:
-        return x, y
-    f = interp1d(x, y, kind=method, fill_value="extrapolate")
-    x_new = np.linspace(min(x), max(x), num=len(x) * 10)
-    y_new = f(x_new)
-    return x_new, y_new
-
-
-train_data_path = r'100082406303W600_136968569_TVD.csv'
-test_data_path = r'generated_geological_data.csv'
-
-features = ['DEPTH', 'C13Z', 'C24Z', 'CALZ', 'CN', 'CNCD', 'GRZ', 'LSN', 'PE', 'PORD', 'SSN', 'TENZ', 'ZCOR', 'ZDEN']
-target = 'LABEL'
-
-train_data, test_data = load_data(train_data_path, test_data_path)
-if train_data is None or test_data is None:
-    raise ValueError("Failed to load data.")
-
-train_data = convert_to_percentage(train_data, ['CN', 'PORD'])
-test_data = convert_to_percentage(test_data, ['CN', 'PORD'])
-
-train_data = train_data.sample(frac=0.1, random_state=42)
-
-X_train, y_train, X_test, y_test = prepare_data(train_data, test_data, features, target)
-if X_train is None or y_train is None or X_test is None:
-    raise ValueError("Failed to prepare data.")
-
-log(f"Training data class distribution: \n{y_train.value_counts()}")
-
-model = train_model(X_train, y_train)
-if model is None:
-    raise ValueError("Failed to train the model.")
-
-log("Predicting test data...")
-y_pred_proba = model.predict_proba(X_test)
-
-for idx, class_label in enumerate(model.classes_):
-    test_data[f'PREDICTED_PROBA_{class_label}'] = y_pred_proba[:, idx] * 100
-
-log("Calculating feature importance...")
-feature_importance = model.feature_importances_
-sorted_idx = np.argsort(feature_importance)
-
-log("Setting up the Dash app...")
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
-
-app.layout = dbc.Container([
-    dcc.Store(id='uploaded-file-store', storage_type='memory'),
-    dbc.Row([
-        dbc.Col(html.H1("Lithology Prediction Model Results"), className="mb-4")
-    ]),
-    dbc.Row([
-        dbc.Col([
-            dbc.Tabs([
-                dbc.Tab(label='Feature Importance', tab_id='tab-2'),
-                dbc.Tab(label='Predicted Probabilities', tab_id='tab-3'),
-                dbc.Tab(label='Interpolation/Smoothing', tab_id='tab-4'),
-                dbc.Tab(label='Cross-Plot', tab_id='tab-5'),
-                dbc.Tab(label='Gradient', tab_id='tab-7')
-            ], id='tabs', active_tab='tab-2'),
-            dcc.Slider(
-                id='depth-slider',
-                min=test_data['DEPTH'].min(),
-                max=test_data['DEPTH'].max(),
-                value=test_data['DEPTH'].max(),
-                marks={int(i): str(i) for i in
-                       np.linspace(test_data['DEPTH'].min(), test_data['DEPTH'].max(), num=10, dtype=int)},
-                step=10
-            ),
-            dbc.Checkbox(
-                id='remove-outliers-checkbox',
-                label='Remove Outliers',
-                value=False
-            ),
-        ], width=12)
-    ]),
-    dbc.Row([
-        dbc.Col(html.Div(id='tab-content'))
-    ]),
-    html.Div([
-        html.Button(
-            html.Img(src='https://img.icons8.com/ios-filled/50/000000/chat.png', alt='Chat'),
-            id='open-chat-button',
-            style={'position': 'fixed', 'bottom': '20px', 'right': '20px', 'border': 'none', 'background': 'none'}
-        ),
-        dbc.Modal(
-            [
-                dbc.ModalHeader("Chat with AI", className="chat-header"),
-                dbc.ModalBody(
-                    [
-                        html.Div(id='chat-messages', className="chat-messages"),
-                        html.Div([
-                            dcc.Input(id='chat-input', type='text', placeholder='Type a message...',
-                                      className='chat-input'),
-                            html.Button('Send', id='send-button', className='send-button'),
-                            dcc.Upload(
-                                id='upload-data',
-                                children=html.Div([
-                                    html.Img(src='https://img.icons8.com/ios-filled/50/000000/link.png', alt='Upload'),
-                                ]),
-                                className='upload-button'
-                            )
-                        ], className='input-group')
-                    ]
-                ),
-                dbc.ModalFooter(
-                    dbc.Button("Close", id="close-chat-button", className="chat-button")
-                )
-            ],
-            id="chat-modal",
-            is_open=False,
-            className="chat-modal"
-        )
-    ], style={'position': 'fixed', 'bottom': '20px', 'right': '20px', 'width': '350px', 'height': '500px'})
-], fluid=True)
-
-@app.callback(
-    Output('tab-content', 'children'),
-    [Input('tabs', 'active_tab'), Input('depth-slider', 'value'), Input('remove-outliers-checkbox', 'value')]
-)
-def render_tab_content(active_tab, depth_value, remove_outliers):
-    filtered_test_data = test_data[test_data['DEPTH'] <= depth_value]
-
-    if remove_outliers:
-        filtered_test_data = remove_outliers_and_negatives(filtered_test_data, features)
-
-    if active_tab == 'tab-2':
-        fi_fig = px.bar(
-            x=feature_importance[sorted_idx],
-            y=np.array(features)[sorted_idx],
-            orientation='h',
-            title='Feature Importance'
-        )
-        fi_fig.update_layout(xaxis_title='Importance', yaxis_title='Features')
-        return dcc.Graph(figure=fi_fig)
-
-    elif active_tab == 'tab-3':
-        tab_content = []
-        for class_label in model.classes_:
-            fig = px.scatter(x=filtered_test_data['DEPTH'], y=filtered_test_data[f'PREDICTED_PROBA_{class_label}'],
-                             title=f'Predicted Probability of {class_label} (%)')
-            fig.update_layout(xaxis_title='Depth (m)', yaxis_title=f'Predicted Probability of {class_label} (%)')
-            tab_content.append(dcc.Graph(figure=fig))
-        return html.Div(tab_content)
-
-    elif active_tab == 'tab-4':
-        return html.Div([
-            dcc.Dropdown(
-                id='interpolation-method-dropdown',
-                options=[
-                    {'label': 'Linear Interpolation', 'value': 'linear'},
-                    {'label': 'Cubic Interpolation', 'value': 'cubic'},
-                    {'label': 'Smoothing', 'value': 'smoothing'}
-                ],
-                value='linear',
-                placeholder="Select method"
-            ),
-            html.Div(id='interpolation-content')
-        ])
-
-    elif active_tab == 'tab-5':
-        return html.Div([
-            dcc.Dropdown(
-                id='x-axis-dropdown',
-                options=[{'label': feature, 'value': feature} for feature in features],
-                value=features[0],
-                placeholder="Select X-axis feature"
-            ),
-            dcc.Dropdown(
-                id='y-axis-dropdown',
-                options=[{'label': feature, 'value': feature} for feature in features],
-                value=features[1],
-                placeholder="Select Y-axis feature"
-            ),
-            html.Div(id='ai-insights', className="mt-4"),
-            dcc.Graph(id='cross-plot')
-        ])
-
-    elif active_tab == 'tab-7':
-        return html.Div([
-            dcc.Dropdown(
-                id='gradient-y-axis-dropdown',
-                options=[{'label': feature, 'value': feature} for feature in features],
-                value='PORD',
-                placeholder="Select Y-axis feature for gradient visualization"
-            ),
-            dcc.Graph(id='gradient-plot')
-        ])
-
-
-@app.callback(
-    Output('interpolation-content', 'children'),
-    [Input('interpolation-method-dropdown', 'value'),
-     Input('depth-slider', 'value')]
-)
-def update_interpolation_content(method, depth_value):
-    filtered_test_data = test_data[test_data['DEPTH'] <= depth_value].sort_values('DEPTH')
-
-    tab_content = []
-    for class_label in model.classes_:
-        x = filtered_test_data['DEPTH']
-        y = filtered_test_data[f'PREDICTED_PROBA_{class_label}']
-
-        fig = go.Figure()
-
-        # Original data points
-        fig.add_trace(go.Scatter(x=x, y=y, mode='markers', name='Original Data',
-                                 marker=dict(size=8, color='black', symbol='square-open')))
-
-        # Generate more x points for smoother interpolation
-        x_new = np.linspace(x.min(), x.max(), num=len(x)*10)
-
-        if method in ['linear', 'cubic']:
-            # Use the predict_points function for interpolation
-            y_new = predict_points(x, y, x_new, method=method)
-            fig.add_trace(go.Scatter(x=x_new, y=y_new, mode='lines', name=f'{method.capitalize()} Interpolation',
-                                     line=dict(color='red', width=2)))
-        elif method == 'smoothing':
-            # Use the existing smoothing method
-            y_smooth = scipy.signal.savgol_filter(y, window_length=5, polyorder=2)
-            fig.add_trace(go.Scatter(x=x, y=y_smooth, mode='lines', name='Smoothed',
-                                     line=dict(color='red', width=2)))
-
-        fig.update_layout(
-            title=f'{method.capitalize()} of {class_label} Probability',
-            xaxis_title='Depth (m)',
-            yaxis_title=f'{class_label} Probability (%)',
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        tab_content.append(dcc.Graph(figure=fig))
-
-    return html.Div(tab_content)
-
-@app.callback(
-    [Output('cross-plot', 'figure'), Output('ai-insights', 'children')],
-    [Input('x-axis-dropdown', 'value'), Input('y-axis-dropdown', 'value'), Input('remove-outliers-checkbox', 'value')]
-)
-def update_cross_plot_and_insights(x_feature, y_feature, remove_outliers):
-    plot_data = train_data.copy()
-
-    if remove_outliers:
-        plot_data = remove_outliers_and_negatives(plot_data, [x_feature, y_feature])
-
-    fig = px.scatter(plot_data, x=x_feature, y=y_feature, color='LABEL')
-    x_unit = extract_unit(feature_descriptions.get(x_feature, "No description available."))
-    y_unit = extract_unit(feature_descriptions.get(y_feature, "No description available."))
-    fig.update_layout(title=f'Cross-Plot: {x_feature} vs {y_feature}',
-                      xaxis_title=f'{x_feature.split()[0]} ({x_unit})',
-                      yaxis_title=f'{y_feature.split()[0]} ({y_unit})')
-
-    x_description = feature_descriptions.get(x_feature, "No description available.")
-    y_description = feature_descriptions.get(y_feature, "No description available.")
-
-    ai_insights = html.Div([
-        html.P(x_description),
-        html.P(y_description)
+import numpy as np
+from scipy.interpolate import CubicSpline, interp1d
+from sklearn.linear_model import LinearRegression
+from sklearn.cluster import KMeans
+from scipy.signal import savgol_filter
+from flask_caching import Cache
+import plotly.colors as plotly_colors
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from pyngrok import ngrok  # Import ngrok
+
+# Constants
+CSV_FILE_PATH = "real_las_data.csv"
+PLACEHOLDER_VALUE = -999.25
+DEFAULT_NOISE_REDUCTION_WINDOW = 21
+DEFAULT_EMA_WINDOW = 5
+INTERPOLATION_POINTS = 5000
+TREND_LINE_COLOR = 'red'
+TREND_LINE_DASH = 'dash'
+EMA_LINE_COLOR = 'orange'
+
+# Load the data
+data = pd.read_csv(CSV_FILE_PATH)
+
+# Remove placeholder values
+data.replace(PLACEHOLDER_VALUE, float('nan'), inplace=True)
+
+def train_lithology_models(data, n_clusters):
+    features = ['C13Z', 'C24Z', 'CALZ', 'CN', 'CNCD', 'GRZ', 'LSN', 'PE', 'PORD', 'SSN', 'TENZ', 'ZCOR', 'ZDEN']
+    
+    available_features = [f for f in features if f in data.columns]
+    if len(available_features) == 0:
+        raise ValueError("None of the specified features are present in the dataset")
+    
+    print(f"Using features: {available_features}")
+
+    X = data[available_features]
+
+    pipeline = Pipeline([
+        ('imputer', SimpleImputer(strategy='mean')),
+        ('scaler', StandardScaler()),
+        ('kmeans', KMeans(n_clusters=n_clusters, random_state=42))
     ])
 
-    return fig, ai_insights
+    pipeline.fit(X)
 
+    return pipeline, available_features
+
+def predict_lithology(pipeline, data, available_features):
+    X = data[available_features]
+    predictions = pipeline.predict(X)
+    return predictions
+
+def get_cluster_characteristics(pipeline, available_features):
+    kmeans = pipeline.named_steps['kmeans']
+    scaler = pipeline.named_steps['scaler']
+    cluster_centers = scaler.inverse_transform(kmeans.cluster_centers_)
+    
+    characteristics = {}
+    for i, center in enumerate(cluster_centers):
+        characteristics[f"Cluster {i+1}"] = {feature: value for feature, value in zip(available_features, center)}
+    
+    return characteristics
+
+# Initialize the Dash app
+app = dash.Dash(__name__)
+
+# Setup caching
+cache = Cache(app.server, config={
+    'CACHE_TYPE': 'simple'
+})
+
+app.layout = html.Div(
+    style={'fontFamily': 'Roboto, sans-serif', 'margin': '0', 'padding': '20px', 'backgroundColor': '#f0f0f0'},
+    children=[
+        html.H1("LithoLogic Insight",
+                style={'fontWeight': '700', 'color': '#2c3e50', 'marginBottom': '30px'}),
+
+        html.Div([
+            html.Label("Depth Range:",
+                       style={'fontWeight': '400', 'color': '#34495e', 'marginBottom': '10px', 'display': 'block'}),
+            dcc.RangeSlider(
+                id='depth-slider',
+                min=data['DEPTH'].min(),
+                max=data['DEPTH'].max(),
+                step=(data['DEPTH'].max() - data['DEPTH'].min()) / 100,
+                marks={int(i): f'{int(i)}' for i in np.linspace(data['DEPTH'].min(), data['DEPTH'].max(), 11)},
+                value=[data['DEPTH'].min(), data['DEPTH'].max()],
+            ),
+        ], style={'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
+                  'boxShadow': '0 2px 10px rgba(0,0,0,0.1)', 'marginBottom': '20px'}),
+
+        html.Div([
+            html.Div([
+                html.Label("Select Parameter:",
+                           style={'fontWeight': '400', 'color': '#34495e', 'marginBottom': '10px', 'display': 'block'}),
+                dcc.Dropdown(
+                    id='param-dropdown',
+                    options=[{'label': col, 'value': col} for col in data.columns if col != 'DEPTH'],
+                    value=data.columns[1]
+                ),
+            ], style={'width': '100%', 'marginBottom': '20px'}),
+
+            html.Button(
+                'Visualization Settings',
+                id='advanced-settings-button',
+                n_clicks=0,
+                style={'marginBottom': '10px', 'backgroundColor': '#3498db', 'color': 'white', 'border': 'none',
+                       'padding': '10px 20px', 'borderRadius': '5px', 'cursor': 'pointer'}
+            ),
+
+            html.Div([
+                html.Div([
+                    html.Label("Noise Reduction (Savitzky-Golay filter window):",
+                               style={'fontWeight': '400', 'color': '#34495e', 'marginBottom': '10px',
+                                      'display': 'block'}),
+                    dcc.Input(
+                        id='noise-reduction-input',
+                        type='number',
+                        placeholder='Enter window size (odd number)',
+                        min=3,
+                        step=2,
+                        value=DEFAULT_NOISE_REDUCTION_WINDOW,
+                        style={'width': '150px'}
+                    ),
+                ], style={'marginBottom': '20px'}),
+
+                html.Div([
+                    html.Label("Interpolation:", style={'fontWeight': '400', 'color': '#34495e', 'marginBottom': '10px',
+                                                        'display': 'block'}),
+                    dcc.RadioItems(
+                        id='interpolation-radio',
+                        options=[
+                            {'label': 'None', 'value': 'none'},
+                            {'label': 'Linear', 'value': 'linear'},
+                            {'label': 'Cubic Spline', 'value': 'cubic'},
+                        ],
+                        value='none',
+                        labelStyle={'display': 'inline-block', 'marginRight': '20px'}
+                    ),
+                ], style={'marginBottom': '20px'}),
+
+                html.Div([
+                    html.Label("Analysis Features:",
+                               style={'fontWeight': '400', 'color': '#34495e', 'marginBottom': '10px',
+                                      'display': 'block'}),
+                    dcc.Checklist(
+                        id='analysis-features',
+                        options=[
+                            {'label': 'Show Trend Line', 'value': 'trend'},
+                            {'label': 'Show Exponential Moving Average (EMA)', 'value': 'ema'},
+                        ],
+                        value=[],
+                        labelStyle={'display': 'block', 'marginBottom': '5px'}
+                    ),
+                ], style={'marginBottom': '20px'}),
+
+                html.Div([
+                    html.Label("EMA Window Size:",
+                               style={'fontWeight': '400', 'color': '#34495e', 'marginBottom': '10px',
+                                      'display': 'block'}),
+                    dcc.Input(
+                        id='ema-window-input',
+                        type='number',
+                        placeholder='Enter EMA window size',
+                        min=2,
+                        step=1,
+                        value=DEFAULT_EMA_WINDOW,
+                        style={'width': '150px'}
+                    ),
+                ], style={'marginBottom': '20px'})
+
+            ], id='advanced-settings-pane', style={'display': 'none'}),
+
+            dcc.Loading(
+                id="loading",
+                type="default",
+                children=[dcc.Graph(id='depth-graph')]
+            ),
+            html.Div(id='error-message', style={'color': 'red', 'marginTop': '10px'}),
+            html.Div(id='statistics',
+                     style={'marginTop': '20px', 'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
+                            'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'}),
+
+            html.Div([
+                html.H3("Parameter Heatmap", style={'fontWeight': '400', 'color': '#2c3e50', 'marginBottom': '20px'}),
+                dcc.Graph(id='heatmap-graph')
+            ], style={'marginTop': '20px', 'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
+                      'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'}),
+
+            html.Div([
+                html.H3("Parameter Distribution Heatmap", style={'fontWeight': '400', 'color': '#2c3e50', 'marginBottom': '20px'}),
+                dcc.Graph(id='parameter-heatmap')
+            ], style={'marginTop': '20px', 'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
+                      'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'}),
+
+            html.Div([
+                html.H3("Rock Type Prediction",
+                        style={'fontWeight': '400', 'color': '#2c3e50', 'marginBottom': '20px'}),
+                html.Div([
+                    html.Label("Number of Lithology Clusters:"),
+                    dcc.Slider(
+                        id='cluster-slider',
+                        min=2,
+                        max=10,
+                        step=1,
+                        value=5,
+                        marks={i: str(i) for i in range(2, 11)}
+                    ),
+                ]),
+                html.Div([
+                    html.Label("Known Lithology Data:"),
+                    dcc.Textarea(
+                        id='known-lithology-input',
+                        placeholder="Enter known lithology data in format: depth,lithology (e.g., 1000,sandstone)",
+                        style={'width': '100%', 'height': 100},
+                    ),
+                ]),
+                html.Div(id='cluster-characteristics'),
+                dcc.Graph(id='prediction-heatmap')
+            ], style={'marginTop': '20px', 'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
+                      'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'})
+
+        ], style={'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
+                  'boxShadow': '0 2px 10px rgba(0,0,0,0.1)', 'marginBottom': '20px'}),
+    ])
 
 @app.callback(
-    Output('gradient-plot', 'figure'),
-    [Input('depth-slider', 'value'), Input('gradient-y-axis-dropdown', 'value'),
-     Input('remove-outliers-checkbox', 'value')]
+    Output('advanced-settings-pane', 'style'),
+    Input('advanced-settings-button', 'n_clicks'),
+    State('advanced-settings-pane', 'style')
 )
-def update_gradient_plot(depth_value, x_feature, remove_outliers):
-    filtered_test_data = test_data[test_data['DEPTH'] <= depth_value]
+def toggle_advanced_settings(n_clicks, current_style):
+    if n_clicks % 2 == 0:
+        return {'display': 'none'}
+    else:
+        return {'display': 'block'}
 
-    if remove_outliers:
-        filtered_test_data = remove_outliers_and_negatives(filtered_test_data, features)
+def calculate_ema(data, window):
+    return data.ewm(span=window, adjust=False).mean()
 
-    fig = px.density_heatmap(
-        filtered_test_data, x=x_feature, y="DEPTH", z="GRZ", histfunc="avg",
-        color_continuous_scale="Jet",
-        title="Gradient Visualization",
-        nbinsx=50,
-        nbinsy=50
+@app.callback(
+    Output('heatmap-graph', 'figure'),
+    [Input('depth-slider', 'value'),
+     Input('param-dropdown', 'value')]
+)
+def update_heatmap(depth_range, selected_param):
+    filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
+    filtered_data = filtered_data.dropna(subset=['DEPTH', selected_param])
+
+    if filtered_data.empty:
+        return go.Figure(layout=go.Layout(
+            title="No valid data in the selected range",
+            height=250,
+            margin=dict(l=50, r=50, t=30, b=50)
+        ))
+
+    heatmap = go.Heatmap(
+        z=[filtered_data[selected_param]],
+        y=[selected_param],
+        x=filtered_data['DEPTH'],
+        colorscale='Viridis'
     )
-    fig.update_layout(xaxis_title=x_feature, yaxis_title='Depth (m)')
+
+    layout = go.Layout(
+        xaxis_title='Depth',
+        xaxis=dict(range=depth_range),
+        height=250,
+        margin=dict(l=50, r=50, t=30, b=50)
+    )
+
+    return {'data': [heatmap], 'layout': layout}
+
+@app.callback(
+    Output('parameter-heatmap', 'figure'),
+    [Input('depth-slider', 'value'),
+     Input('param-dropdown', 'value')]
+)
+def update_parameter_heatmap(depth_range, selected_param):
+    filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
+    filtered_data = filtered_data.dropna(subset=['DEPTH', selected_param])
+    
+    if filtered_data.empty:
+        return go.Figure(layout=go.Layout(title="No valid data in the selected range"))
+    
+    # Create a 2D array of parameter values
+    depth_bins = np.linspace(depth_range[0], depth_range[1], 200)
+    param_bins = np.linspace(filtered_data[selected_param].min(), filtered_data[selected_param].max(), 100)
+    
+    z = np.zeros((len(depth_bins)-1, len(param_bins)-1))
+    
+    for i in range(len(depth_bins)-1):
+        mask = (filtered_data['DEPTH'] >= depth_bins[i]) & (filtered_data['DEPTH'] < depth_bins[i+1])
+        if mask.any():
+            z[i, :] = np.interp(param_bins[:-1], 
+                                filtered_data.loc[mask, selected_param].sort_values(),
+                                np.linspace(0, 1, mask.sum()))
+    
+    # Apply light smoothing
+    z_smooth = scipy.ndimage.gaussian_filter(z, sigma=1)
+    
+    # Create a surface plot
+    surface = go.Surface(
+        z=z_smooth,
+        x=param_bins[:-1],
+        y=depth_bins[:-1],
+        colorscale='Viridis',
+        colorbar=dict(title=selected_param),
+        contours=dict(
+            z=dict(show=True, usecolormap=True, project_z=True)
+        )
+    )
+    
+    layout = go.Layout(
+        title=f'{selected_param} Distribution Heatmap',
+        scene=dict(
+            xaxis_title=f'{selected_param}',
+            yaxis_title='Depth',
+            zaxis_title='Intensity',
+            xaxis=dict(autorange='reversed' if selected_param in ['PHIT', 'POR'] else True),
+            yaxis=dict(autorange='reversed'),
+        ),
+        height=800,
+        width=800,
+        margin=dict(l=65, r=50, b=65, t=90)
+    )
+    
+    fig = go.Figure(data=[surface], layout=layout)
     return fig
 
 
 @app.callback(
-    [Output('chat-messages', 'children'), Output('chat-input', 'value'), Output('uploaded-file-store', 'data')],
-    [Input('send-button', 'n_clicks'), Input('upload-data', 'contents')],
-    [State('chat-input', 'value'), State('chat-messages', 'children'), State('upload-data', 'filename'),
-     State('uploaded-file-store', 'data')]
+    [Output('prediction-heatmap', 'figure'),
+     Output('cluster-characteristics', 'children')],
+    [Input('depth-slider', 'value'),
+     Input('cluster-slider', 'value'),
+     Input('known-lithology-input', 'value')]
 )
-def update_chat(n_clicks, file_contents, message, chat_history, filename, stored_file):
-    if chat_history is None:
-        chat_history = []
+def update_prediction_heatmap(depth_range, n_clusters, known_lithology):
+    try:
+        filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])]
+        
+        if filtered_data.empty:
+            raise ValueError("No data available for the selected depth range.")
 
-    if n_clicks and message:
-        user_message = html.Div(message, className='user-message',
-                                style={'background-color': '#DCF8C6', 'padding': '10px', 'border-radius': '10px',
-                                       'margin-bottom': '10px'})
-        chat_history.append(user_message)
+        # Train the model with the new number of clusters
+        lithology_pipeline, available_features = train_lithology_models(filtered_data, n_clusters)
+        
+        # Make predictions
+        predictions = predict_lithology(lithology_pipeline, filtered_data, available_features)
 
-        typing_animation = html.Div("...", className='bot-message',
-                                    style={'background-color': '#FFFFFF', 'padding': '10px', 'border-radius': '10px',
-                                           'margin-bottom': '10px'})
-        chat_history.append(typing_animation)
+        # Get cluster characteristics
+        cluster_chars = get_cluster_characteristics(lithology_pipeline, available_features)
 
-        bot_response = get_ai_response(message, train_data, test_data, features)
-        chat_history[-1] = html.Div(bot_response, className='bot-message',
-                                    style={'background-color': '#FFFFFF', 'padding': '10px', 'border-radius': '10px',
-                                           'margin-bottom': '10px'})
+        # Create a colorscale for different lithology types
+        cluster_colors = plotly_colors.qualitative.Plotly[:n_clusters]
+        colorscale = [[i/(n_clusters-1), color] for i, color in enumerate(cluster_colors)]
 
-    if file_contents and not stored_file:
-        content_type, content_string = file_contents.split(',')
-        decoded = base64.b64decode(content_string)
-        try:
-            if 'csv' in filename:
-                df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-            elif 'xls' in filename:
-                df = pd.read_excel(io.BytesIO(decoded))
+        heatmap = go.Heatmap(
+            z=[predictions],
+            x=filtered_data['DEPTH'],
+            colorscale=colorscale,
+            showscale=True
+        )
 
-            response_message = f"File {filename} uploaded successfully. Here's a preview:\n{df.head().to_dict()}"
-        except Exception as e:
-            response_message = f"There was an error processing the file {filename}: {str(e)}"
+        # Add known lithology data if provided
+        known_lithology_trace = None
+        if known_lithology:
+            known_data = [line.split(',') for line in known_lithology.split('\n') if line.strip()]
+            known_depths = [float(d) for d, _ in known_data]
+            known_lithos = [l for _, l in known_data]
+            known_lithology_trace = go.Scatter(
+                x=known_depths,
+                y=[0] * len(known_depths),
+                mode='text',
+                text=known_lithos,
+                textposition='top center',
+                name='Known Lithology'
+            )
 
-        file_message = html.Div(response_message, className='user-message',
-                                style={'background-color': '#DCF8C6', 'padding': '10px', 'border-radius': '10px',
-                                       'margin-bottom': '10px'})
-        chat_history.append(file_message)
-        stored_file = {'filename': filename, 'contents': file_contents}
+        layout = go.Layout(
+            title="Lithology Clusters",
+            xaxis_title='Depth',
+            xaxis=dict(range=depth_range),
+            yaxis=dict(
+                showticklabels=False,
+                showgrid=False,
+                zeroline=False,
+            ),
+            height=400,
+            margin=dict(l=50, r=50, t=50, b=50)
+        )
 
-    return chat_history, "", stored_file
+        fig = go.Figure(data=[heatmap, known_lithology_trace] if known_lithology_trace else [heatmap], layout=layout)
 
+        fig.update_layout(
+            coloraxis_colorbar=dict(
+                title="Cluster",
+                tickvals=list(range(n_clusters)),
+                ticktext=[f"Cluster {i+1}" for i in range(n_clusters)],
+                lenmode="pixels", len=200,
+            )
+        )
+
+        # Create a formatted display of cluster characteristics
+        char_display = html.Div([
+            html.H4("Cluster Characteristics:"),
+            html.Ul([
+                html.Li([
+                    f"Cluster {i+1}: ",
+                    html.Ul([
+                        html.Li(f"{feature}: {value:.2f}") for feature, value in chars.items()
+                    ])
+                ]) for i, chars in enumerate(cluster_chars.values())
+            ])
+        ])
+
+        return fig, char_display
+
+    except Exception as e:
+        print(f"Error in update_prediction_heatmap: {str(e)}")
+        return go.Figure(layout=go.Layout(
+            title=f"Error: {str(e)}",
+            height=400,
+            margin=dict(l=50, r=50, t=50, b=50)
+        )), html.Div(f"Error: {str(e)}")
 
 @app.callback(
-    Output('chat-modal', 'is_open'),
-    [Input('open-chat-button', 'n_clicks'), Input('close-chat-button', 'n_clicks')],
-    [State('chat-modal', 'is_open')]
+    [Output('depth-graph', 'figure'),
+     Output('error-message', 'children'),
+     Output('statistics', 'children')],
+    [Input('depth-slider', 'value'),
+     Input('param-dropdown', 'value'),
+     Input('noise-reduction-input', 'value'),
+     Input('interpolation-radio', 'value'),
+     Input('analysis-features', 'value'),
+     Input('ema-window-input', 'value')]
 )
-def toggle_chat_modal(n1, n2, is_open):
-    if n1 or n2:
-        return not is_open
-    return is_open
+@cache.memoize(timeout=300)  # Cache the result for 5 minutes
+def update_graph(depth_range, selected_param, noise_reduction_window, interpolation, analysis_features, ema_window):
+    try:
+        filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
+        filtered_data = filtered_data.dropna(subset=['DEPTH', selected_param])
 
+        if filtered_data.empty:
+            raise ValueError("No valid data in the selected range")
 
+        fig = go.Figure()
+
+        # Apply noise reduction
+        if noise_reduction_window and noise_reduction_window > 0:
+            noise_reduction_window = noise_reduction_window + 1 if noise_reduction_window % 2 == 0 else noise_reduction_window
+            smoothed_data = savgol_filter(filtered_data[selected_param], noise_reduction_window, 3)
+
+            # Identify and remove noisy points
+            diff = np.abs(filtered_data[selected_param] - smoothed_data)
+            threshold = np.std(diff) * 2
+            filtered_out = diff > threshold
+            cleaned_data = filtered_data[~filtered_out].copy()
+        else:
+            cleaned_data = filtered_data
+
+        # Plot original data points
+        fig.add_trace(go.Scatter(
+            x=cleaned_data['DEPTH'],
+            y=cleaned_data[selected_param],
+            mode='markers',
+            name='Data Points',
+            marker=dict(color='lightgray', size=5)
+        ))
+
+        # Apply interpolation
+        if interpolation != 'none' and len(cleaned_data) > 1:
+            x = cleaned_data['DEPTH'].values
+            y = cleaned_data[selected_param].values
+            x_new = np.linspace(x.min(), x.max(), num=INTERPOLATION_POINTS)
+            if interpolation == 'cubic' and len(cleaned_data) > 3:
+                cs = CubicSpline(x, y)
+                y_new = cs(x_new)
+                fig.add_trace(go.Scatter(x=x_new, y=y_new, mode='lines', name='Cubic Interpolation', line=dict(color='blue')))
+            elif interpolation == 'linear':
+                f = interp1d(x, y)
+                y_new = f(x_new)
+                fig.add_trace(go.Scatter(x=x_new, y=y_new, mode='lines', name='Linear Interpolation', line=dict(color='green')))
+
+        # Add trend line
+        if 'trend' in analysis_features and len(cleaned_data) > 1:
+            X = cleaned_data['DEPTH'].values.reshape(-1, 1)
+            y = cleaned_data[selected_param].values
+            model = LinearRegression().fit(X, y)
+            trend_y = model.predict(X)
+            fig.add_trace(go.Scatter(x=cleaned_data['DEPTH'], y=trend_y, mode='lines', name='Trend',
+                                     line=dict(color=TREND_LINE_COLOR, dash=TREND_LINE_DASH)))
+
+        # Add Exponential Moving Average line
+        if 'ema' in analysis_features and len(cleaned_data) > ema_window:
+            ema = calculate_ema(cleaned_data[selected_param], ema_window)
+            fig.add_trace(go.Scatter(x=cleaned_data['DEPTH'], y=ema, mode='lines', name=f'EMA ({ema_window})',
+                                     line=dict(color=EMA_LINE_COLOR)))
+
+        fig.update_layout(
+            title=f"{selected_param} vs Depth",
+            xaxis_title="Depth",
+            yaxis_title=selected_param,
+            xaxis=dict(range=depth_range),  # Set x-axis range to match depth slider
+            height=600,
+            font=dict(family="Roboto"),
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            xaxis_showgrid=True,
+            xaxis_gridcolor='lightgray',
+            yaxis_showgrid=True,
+            yaxis_gridcolor='lightgray'
+        )
+
+        # Calculate statistics
+        stats = html.Div([
+            html.H3(f"Statistics for {selected_param}"),
+            html.Table([
+                html.Tr([html.Td("Depth range:"), html.Td(f"{depth_range[0]:.2f} - {depth_range[1]:.2f}")]),
+                html.Tr([html.Td("Mean:"), html.Td(f"{np.mean(cleaned_data[selected_param]):.2f}")]),
+                html.Tr([html.Td("Median:"), html.Td(f"{np.median(cleaned_data[selected_param]):.2f}")]),
+                html.Tr([html.Td("Standard Deviation:"), html.Td(f"{np.std(cleaned_data[selected_param]):.2f}")]),
+                html.Tr([html.Td("Min:"), html.Td(f"{np.min(cleaned_data[selected_param]):.2f}")]),
+                html.Tr([html.Td("Max:"), html.Td(f"{np.max(cleaned_data[selected_param]):.2f}")]),
+            ], style={'width': '100%', 'borderCollapse': 'collapse'}),
+        ])
+
+        return fig, "", stats
+    except Exception as e:
+        return go.Figure(), f"An error occurred: {str(e)}", ""
+
+# Run the app
 if __name__ == '__main__':
-    log("Starting server...")
-    app.run_server(debug=True)
+    # Set the Ngrok authentication token
+    ngrok.set_auth_token("2iZVuDIzKonmVHYlu7s7rIR0TF7_6JWt8Q3vJQvpttNJkYfxK")
+
+    # Start the Ngrok tunnel
+    public_url = ngrok.connect(8050)
+    print(f'Public URL: {public_url}')
+    
+    app.run_server(debug=True, use_reloader=False)  # Turn off reloader if inside Jupyter
