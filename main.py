@@ -358,6 +358,9 @@ def update_prediction_heatmap(depth_range, n_clusters, known_lithology):
         # Make predictions
         predictions = predict_lithology(lithology_pipeline, filtered_data, available_features)
 
+        # Adjust predictions to start from 1 instead of 0
+        predictions = predictions + 1
+
         # Get cluster characteristics
         cluster_chars = get_cluster_characteristics(lithology_pipeline, available_features)
 
@@ -405,7 +408,7 @@ def update_prediction_heatmap(depth_range, n_clusters, known_lithology):
         fig.update_layout(
             coloraxis_colorbar=dict(
                 title="Cluster",
-                tickvals=list(range(n_clusters)),
+                tickvals=list(range(1, n_clusters + 1)),
                 ticktext=[f"Cluster {i + 1}" for i in range(n_clusters)],
                 lenmode="pixels", len=200,
             )
@@ -437,7 +440,6 @@ def update_prediction_heatmap(depth_range, n_clusters, known_lithology):
             height=400,
             margin=dict(l=50, r=50, t=50, b=50)
         )), html.Div(f"Error: {str(e)}")
-
 
 
 @app.callback(
