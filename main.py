@@ -62,12 +62,13 @@ def get_cluster_characteristics(pipeline, available_features):
     kmeans = pipeline.named_steps['kmeans']
     scaler = pipeline.named_steps['scaler']
     cluster_centers = scaler.inverse_transform(kmeans.cluster_centers_)
-    
+
     characteristics = {}
     for i, center in enumerate(cluster_centers):
-        characteristics[f"Cluster {i+1}"] = {feature: value for feature, value in zip(available_features, center)}
-    
+        characteristics[f"Cluster {i + 1}"] = {feature: value for feature, value in zip(available_features, center)}
+
     return characteristics
+
 
 # Initialize the Dash app
 app = dash.Dash(__name__)
@@ -336,6 +337,7 @@ def update_parameter_heatmap(depth_range, selected_param):
     return fig
 
 
+# Update the 'update_prediction_heatmap' callback
 @app.callback(
     [Output('prediction-heatmap', 'figure'),
      Output('cluster-characteristics', 'children')],
@@ -361,7 +363,7 @@ def update_prediction_heatmap(depth_range, n_clusters, known_lithology):
 
         # Create a colorscale for different lithology types
         cluster_colors = plotly_colors.qualitative.Plotly[:n_clusters]
-        colorscale = [[i/(n_clusters-1), color] for i, color in enumerate(cluster_colors)]
+        colorscale = [[i / (n_clusters - 1), color] for i, color in enumerate(cluster_colors)]
 
         heatmap = go.Heatmap(
             z=[predictions],
@@ -404,23 +406,27 @@ def update_prediction_heatmap(depth_range, n_clusters, known_lithology):
             coloraxis_colorbar=dict(
                 title="Cluster",
                 tickvals=list(range(n_clusters)),
-                ticktext=[f"Cluster {i+1}" for i in range(n_clusters)],
+                ticktext=[f"Cluster {i + 1}" for i in range(n_clusters)],
                 lenmode="pixels", len=200,
             )
         )
 
-        # Create a formatted display of cluster characteristics
-        char_display = html.Div([
-            html.H4("Cluster Characteristics:"),
-            html.Ul([
-                html.Li([
-                    f"Cluster {i+1}: ",
-                    html.Ul([
-                        html.Li(f"{feature}: {value:.2f}") for feature, value in chars.items()
-                    ])
-                ]) for i, chars in enumerate(cluster_chars.values())
-            ])
-        ])
+        # Create a formatted display of cluster characteristics as a table
+        table_header = [html.Th("Feature")] + [html.Th(f"Cluster {i + 1}", style={'color': cluster_colors[i]}) for i in range(n_clusters)]
+        table_body = []
+        for feature in available_features:
+            row = [html.Td(feature)]
+            for i in range(n_clusters):
+                row.append(html.Td(f"{cluster_chars[f'Cluster {i + 1}'][feature]:.2f}"))
+            table_body.append(html.Tr(row))
+
+        char_display = html.Table(
+            # Table header
+            [html.Tr(table_header)] +
+            # Table body
+            table_body,
+            style={'width': '100%', 'borderCollapse': 'collapse', 'marginTop': '20px'}
+        )
 
         return fig, char_display
 
@@ -431,6 +437,8 @@ def update_prediction_heatmap(depth_range, n_clusters, known_lithology):
             height=400,
             margin=dict(l=50, r=50, t=50, b=50)
         )), html.Div(f"Error: {str(e)}")
+
+
 
 @app.callback(
     [Output('depth-graph', 'figure'),
