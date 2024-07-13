@@ -200,8 +200,15 @@ app.layout = html.Div(
                 html.H3("Parameter Distribution Heatmap", style={'fontWeight': '400', 'color': '#2c3e50', 'marginBottom': '20px'}),
                 dcc.Graph(id='parameter-heatmap')
             ], style={'marginTop': '20px', 'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
-                      'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'}),
+                    'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'}),
 
+            # Add this new div for the 2D line heatmap
+            html.Div([
+                html.H3("2D Parameter Heatmap", style={'fontWeight': '400', 'color': '#2c3e50', 'marginBottom': '20px'}),
+                dcc.Graph(id='2d-line-heatmap')
+            ], style={'marginTop': '20px', 'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '8px',
+                    'boxShadow': '0 2px 10px rgba(0,0,0,0.1)'}),
+            
             html.Div([
                 html.H3("Rock Type Prediction",
                         style={'fontWeight': '400', 'color': '#2c3e50', 'marginBottom': '20px'}),
@@ -441,6 +448,53 @@ def update_prediction_heatmap(depth_range, n_clusters, known_lithology):
             margin=dict(l=50, r=50, t=50, b=50)
         )), html.Div(f"Error: {str(e)}")
 
+@app.callback(
+    Output('2d-line-heatmap', 'figure'),
+    [Input('depth-slider', 'value'),
+     Input('param-dropdown', 'value')]
+)
+def update_2d_line_heatmap(depth_range, selected_param):
+    filtered_data = data[(data['DEPTH'] >= depth_range[0]) & (data['DEPTH'] <= depth_range[1])].copy()
+    filtered_data = filtered_data.dropna(subset=['DEPTH', selected_param])
+
+    if filtered_data.empty:
+        return go.Figure(layout=go.Layout(
+            title="No valid data in the selected range",
+            height=800,
+            margin=dict(l=50, r=50, t=50, b=50)
+        ))
+
+    # Normalize the parameter values to a 0-1 range
+    min_val = filtered_data[selected_param].min()
+    max_val = filtered_data[selected_param].max()
+    normalized_param = (filtered_data[selected_param] - min_val) / (max_val - min_val)
+
+    # Create the line trace
+    line_trace = go.Scatter(
+        x=normalized_param,
+        y=filtered_data['DEPTH'],
+        mode='lines',
+        line=dict(color='red', width=2),
+        fill='tozerox',
+        fillcolor='rgba(255, 0, 0, 0.3)'
+    )
+
+    layout = go.Layout(
+        title=f"{selected_param} 2D Heatmap",
+        xaxis_title=selected_param,
+        yaxis_title='Depth',
+        yaxis=dict(
+            range=[depth_range[1], depth_range[0]],  # Reverse the y-axis
+            autorange='reversed'
+        ),
+        height=2000,  # Increased height for vertical stretch
+        width=600,    # Maintained width
+        margin=dict(l=50, r=50, t=50, b=50)
+    )
+
+    fig = go.Figure(data=[line_trace], layout=layout)
+
+    return fig
 
 @app.callback(
     [Output('depth-graph', 'figure'),
