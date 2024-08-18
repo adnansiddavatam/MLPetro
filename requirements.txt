@@ -1,7 +1,8 @@
+scipy
 pandas
-numpy
-dash
-dash-bootstrap-components
 plotly
+dash
+numpy
 scikit-learn
-openai
+flask-caching
+pyngrok
